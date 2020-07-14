@@ -141,8 +141,9 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			byte[] hash = digest.digest(dstAddress.getBytes(StandardCharsets.UTF_8));
 			dstAddressHashString = Hex.encodeHexString(hash);
 			
-			JingleS5BTransport.getBuilder().addTransportCandidate(candidate).setStreamId(streamId).setMode(Bytestream.Mode.tcp).setDestinationAddress(dstAddressHashString).build();
-			final JingleS5BTransport transport = JingleS5BTransport.getBuilder().addTransportCandidate(candidate).setStreamId(streamId).setMode(Bytestream.Mode.tcp).build();
+			JingleS5BTransport.Builder builder = JingleS5BTransport.getBuilder();
+			builder.addTransportCandidate(candidate).setStreamId(streamId).setMode(Bytestream.Mode.tcp).setDestinationAddress(dstAddressHashString).build();
+			final JingleS5BTransport transport = builder.build();
 			
 			
 			/*
@@ -181,6 +182,8 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		{
 			this.transferState = FileTransferState.SESSION_ACCEPT;
 			
+			System.out.println("Acking session accept.");
+			
 			// by spec, we return an empty IQ result
 			final EmptyResultIQ result = new EmptyResultIQ();
 			result.setFrom(jingle.getTo());
@@ -198,6 +201,8 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			{
 				case CANDIDATE_USED:
 				{
+					System.out.println("Acking responder candidate used.");
+					
 					// by spec, we return an empty IQ result
 					final EmptyResultIQ result = new EmptyResultIQ();
 					result.setFrom(jingle.getTo());
@@ -245,6 +250,8 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		@Override
 		public void run()
 		{
+			System.out.println("Attempting to connect to proxy server.");
+			
 			// connect to the stream host
 			final AuthSocks5Client sock5Client = new AuthSocks5Client(streamhost, dstAddressHashString, con, streamId, recipFullJid);
 			
@@ -267,6 +274,8 @@ public class OutgoingFileTransport implements JingleSessionHandler
 				
 				transferState = FileTransferState.INITIATOR_CANDIDATE_USED;
 				
+				System.out.println("Sending initiator candidiate used.");
+				
 				// send and wait for ack
 				final IQ result = con.createStanzaCollectorAndSend(cadidateUsed).nextResultOrThrow();
 				
@@ -274,10 +283,14 @@ public class OutgoingFileTransport implements JingleSessionHandler
 				{
 					transferState = FileTransferState.INITIATOR_CANDIDATE_USED;
 					
+					System.out.println("Activiating proxy");
+					
 					// activate the stream
 					sock5Client.activate();
 					
 					final Jingle cadidateActiviate = createTransportInfoMessage(new JingleS5BTransportInfo.CandidateActivated(candidateId));
+					
+					System.out.println("Sending candidate active.");
 					
 					con.sendIqRequestAsync(cadidateActiviate);
 				}
