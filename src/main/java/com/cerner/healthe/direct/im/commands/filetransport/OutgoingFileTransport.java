@@ -20,7 +20,7 @@ import org.jivesoftware.smack.packet.EmptyResultIQ;
 import org.jivesoftware.smack.packet.IQ;
 import org.jivesoftware.smack.packet.IQ.Type;
 import org.jivesoftware.smackx.bytestreams.socks5.packet.Bytestream;
-import org.jivesoftware.smackx.filetransfer.AuthSocks5ClientForInitiator;
+import org.jivesoftware.smackx.filetransfer.AuthSocks5Client;
 import org.jivesoftware.smackx.filetransfer.FileTransferNegotiator;
 import org.jivesoftware.smackx.hashes.HashManager;
 import org.jivesoftware.smackx.hashes.element.HashElement;
@@ -190,9 +190,6 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			
 			this.transferState = FileTransferState.SESSION_ACCEPT_ACK;
 			
-			// start up the connection to our proxy server and manage the transfer
-			sendFileExecutor.execute(new Socks5ConnectionManager());
-			
 			return result;
 		}
 		else if (jingle.getAction() == JingleAction.transport_info)
@@ -201,7 +198,17 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			{
 				case CANDIDATE_USED:
 				{
-					break;
+					// by spec, we return an empty IQ result
+					final EmptyResultIQ result = new EmptyResultIQ();
+					result.setFrom(jingle.getTo());
+					result.setTo(jingle.getFrom());
+					result.setType(Type.result);
+					result.setStanzaId(jingle.getStanzaId());
+					
+					// start up the connection to our proxy server and manage the transfer
+					sendFileExecutor.execute(new Socks5ConnectionManager());
+					
+					return result;
 				}
 				case CANDIDATE_ACTIVATED:
 				{
@@ -239,7 +246,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		public void run()
 		{
 			// connect to the stream host
-			final AuthSocks5ClientForInitiator sock5Client = new AuthSocks5ClientForInitiator(streamhost, dstAddressHashString, con, streamId, recipFullJid);
+			final AuthSocks5Client sock5Client = new AuthSocks5Client(streamhost, dstAddressHashString, con, streamId, recipFullJid);
 			
 			try
 			{
@@ -275,10 +282,12 @@ public class OutgoingFileTransport implements JingleSessionHandler
 					con.sendIqRequestAsync(cadidateActiviate);
 				}
 				
+				// start transferring data
+				
 			}
 			catch (Exception e)
 			{
-				
+				e.printStackTrace();
 			}
 		}
 	}

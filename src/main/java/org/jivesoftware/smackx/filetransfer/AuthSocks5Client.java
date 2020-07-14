@@ -38,7 +38,7 @@ import org.jivesoftware.smackx.bytestreams.socks5.packet.Bytestream;
 import org.jivesoftware.smackx.bytestreams.socks5.packet.Bytestream.StreamHost;
 import org.jxmpp.jid.Jid;
 
-public class AuthSocks5ClientForInitiator extends Socks5Client
+public class AuthSocks5Client extends Socks5Client
 {
     private WeakReference<XMPPConnection> connection;
 	
@@ -46,7 +46,7 @@ public class AuthSocks5ClientForInitiator extends Socks5Client
 
     private final Jid target;
 	
-	public AuthSocks5ClientForInitiator(StreamHost streamHost, String digest, XMPPConnection connection,
+	public AuthSocks5Client(StreamHost streamHost, String digest, XMPPConnection connection,
             String sessionID, Jid target)
 	{
 		super(streamHost, digest);
