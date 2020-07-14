@@ -130,7 +130,7 @@ public class IncomingFileTransport implements JingleHandler, JingleSessionHandle
 							// to connect to proxy servers
 							streamId = jingle.getSid();
 							fileTransferTargetJID = jingle.getTo().asEntityFullJidIfPossible();
-							initiatorJID = jingle.getTo().asEntityFullJidIfPossible();
+							initiatorJID = jingle.getFrom().asEntityFullJidIfPossible();
 							
 							final JingleS5BTransport transport = (JingleS5BTransport)jingle.getContents().get(0).getTransport();
 							
@@ -210,6 +210,7 @@ public class IncomingFileTransport implements JingleHandler, JingleSessionHandle
 		public TargetSocks5ConnectionManager(List<JingleContentTransportCandidate> candidates, String dstAddressHashString)
 		{
 			this.candidates = candidates;
+			this.dstAddressHashString = dstAddressHashString;
 		
 		}
 		
