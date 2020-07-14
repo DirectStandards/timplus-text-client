@@ -87,7 +87,7 @@ public class IncomingFileTransport implements JingleHandler, JingleSessionHandle
 						
 						transferState = FileTransferState.SESSION_ACCEPT;
 						
-						jingleManager.registerJingleSessionHandler(jingle.getTo().asFullJidIfPossible(), jingle.getSid(), IncomingFileTransport.this);
+						jingleManager.registerJingleSessionHandler(jingle.getFrom().asFullJidIfPossible(), jingle.getSid(), IncomingFileTransport.this);
 						
 						final StanzaCollector fileOfferCollector = con.createStanzaCollectorAndSend(sessionAccept);
 						
