@@ -309,7 +309,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 				}
 				case CANDIATE_ERROR:
 				{
-					System.out.println("Recieved a proxy-error from the responder.");
+					System.out.println("Recieved a candidate error from the responder.");
 					
 					break;
 				}	
