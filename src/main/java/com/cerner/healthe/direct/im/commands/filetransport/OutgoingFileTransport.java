@@ -262,6 +262,21 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			
 			return result;
 		}
+		else if (jingle.getAction() == JingleAction.session_terminate)
+		{
+			System.out.println("The recipient has terminated the session.");
+			
+			jingleManager.unregisterJingleSessionHandler(recipFullJid, streamId, OutgoingFileTransport.this);
+			
+			// by spec, we return an empty IQ result
+			final EmptyResultIQ result = new EmptyResultIQ();
+			result.setFrom(jingle.getTo());
+			result.setTo(jingle.getFrom());
+			result.setType(Type.result);
+			result.setStanzaId(jingle.getStanzaId());
+			
+			return result;			
+		}
 		else if (jingle.getAction() == JingleAction.transport_info)
 		{
 			switch (TransportInfoType.getTransportInfoType(jingle.getContents().get(0)))
