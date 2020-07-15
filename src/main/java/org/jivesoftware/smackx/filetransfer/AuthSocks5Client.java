@@ -12,14 +12,19 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import javax.net.ssl.SNIHostName;
+import javax.net.ssl.SNIServerName;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.X509TrustManager;
@@ -80,8 +85,17 @@ public class AuthSocks5Client extends Socks5Client
 	    			sslContext.init(null, new TrustManager[] { new TrustManager()}, new SecureRandom());
 	    			SSLSocketFactory socketFactory = sslContext.getSocketFactory();
 	    			
+	    			final SNIHostName serverName = new SNIHostName(streamHost.getJID().toString());
+	    			final List<SNIServerName> serverNames = new ArrayList<>(1);
+	    			serverNames.add(serverName);
+	    			
 	    			socket  = (SSLSocket) socketFactory.createSocket();
 	    			socket.setSoTimeout(timeout);
+	    			
+	    			final SSLParameters params = socket.getSSLParameters();
+	    			params.setServerNames(serverNames);
+	    			socket.setSSLParameters(params);
+	    			
 	    			socket.connect(socketAddress, timeout);	
 	    			
 	    			

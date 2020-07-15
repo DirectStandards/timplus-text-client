@@ -36,8 +36,6 @@ import org.jivesoftware.smackx.jingle.element.JingleContent.Creator;
 import org.jivesoftware.smackx.jingle.transports.jingle_s5b.elements.JingleS5BTransport;
 import org.jivesoftware.smackx.jingle.transports.jingle_s5b.elements.JingleS5BTransportCandidate;
 import org.jivesoftware.smackx.jingle.transports.jingle_s5b.elements.JingleS5BTransportInfo;
-import org.jivesoftware.smackx.jingle_filetransfer.element.JingleFileTransfer;
-import org.jivesoftware.smackx.jingle_filetransfer.element.JingleFileTransferChild;
 import org.jxmpp.jid.EntityFullJid;
 
 import com.cerner.healthe.direct.im.packets.CredRequest;
