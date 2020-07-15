@@ -62,4 +62,31 @@ public class FileDetails
 		
 		return Files.probeContentType(file.toPath());
 	}
+
+	public FileTime getCreatedDtTm()
+	{
+		return createdDtTm;
+	}
+
+	public byte[] getHash()
+	{
+		return hash;
+	}
+
+	public int getSize()
+	{
+		return size;
+	}
+
+	public String getName()
+	{
+		return name;
+	}
+
+	public String getMimeType()
+	{
+		return mimeType;
+	}
+	
+	
 }

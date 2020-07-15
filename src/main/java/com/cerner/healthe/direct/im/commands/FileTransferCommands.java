@@ -3,8 +3,6 @@ package com.cerner.healthe.direct.im.commands;
 import java.io.File;
 import java.text.DecimalFormat;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jivesoftware.smack.AbstractXMPPConnection;
@@ -35,6 +33,8 @@ import org.jxmpp.jid.impl.JidCreate;
 import org.nhindirect.common.tooling.Command;
 import org.nhindirect.common.tooling.StringArrayUtil;
 
+import com.cerner.healthe.direct.im.commands.filetransport.FileDetails;
+import com.cerner.healthe.direct.im.commands.filetransport.FileTransferDataListener;
 import com.cerner.healthe.direct.im.commands.filetransport.IncomingFileTransport;
 import com.cerner.healthe.direct.im.commands.filetransport.OutgoingFileTransport;
 import com.cerner.healthe.direct.im.packets.CredRequest;
@@ -71,8 +71,6 @@ public class FileTransferCommands
 	
 	protected boolean acceptFiles = true;
 	
-	protected ExecutorService sendFileMonitorExecutor;
-	
 	protected ServiceDiscoveryManager discoManager;
 	
 	protected StreamHostPrinter bytestreamPrinter;
@@ -84,10 +82,7 @@ public class FileTransferCommands
 	protected final JingleManager jingleManager;
 	
 	public FileTransferCommands(AbstractXMPPConnection con)
-	{
-	
-		sendFileMonitorExecutor = Executors.newSingleThreadExecutor();	
-		
+	{	
 		init(con);
 		
 		bytestreamPrinter = new StreamHostPrinter();
@@ -142,8 +137,12 @@ public class FileTransferCommands
 		
 		final EntityFullJid fullJid = (EntityFullJid)jid;
 
+		File sendFile = new File(file);
+		final FileDetails fileDetail = FileDetails.fileToDetails(sendFile);
+		
 		
 		OutgoingFileTransport outTransport = new OutgoingFileTransport(con);
+		outTransport.addFileTransferDataListener(new SendFileStatusListener(fileDetail.getSize()));
 		outTransport.sendFile(fullJid, new File(file), message);
 		
 		try
@@ -344,5 +343,35 @@ public class FileTransferCommands
 		return retVal;
 	}
 	
-	
+	protected class SendFileStatusListener implements FileTransferDataListener
+	{
+		protected long totalBytesToSend;
+		
+		protected int currentPercent;
+		
+		public SendFileStatusListener(long totalBytesToSend) 
+		{
+			this.totalBytesToSend = totalBytesToSend;
+			
+			currentPercent = 0;
+		}
+
+		@Override
+		public int dataTransfered(long transferedSoFar)
+		{
+			double ratio = (double)transferedSoFar/(double)totalBytesToSend;
+			
+			int percent =  (int) (ratio * 100);
+			if (percent != currentPercent)
+			{
+				System.out.println("File transfer completion: " + percent + "%");
+				currentPercent = percent;
+			}
+			
+			
+			return 0;
+		}
+		
+		
+	}
 }

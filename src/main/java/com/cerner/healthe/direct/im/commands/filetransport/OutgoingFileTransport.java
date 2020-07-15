@@ -1,16 +1,26 @@
 package com.cerner.healthe.direct.im.commands.filetransport;
 
+import java.io.BufferedInputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import org.apache.commons.codec.binary.Hex;
+import org.apache.commons.io.IOUtils;
 import org.jivesoftware.smack.AbstractXMPPConnection;
 import org.jivesoftware.smack.SmackException.NoResponseException;
 import org.jivesoftware.smack.SmackException.NotConnectedException;
@@ -44,47 +54,53 @@ import org.jxmpp.jid.EntityFullJid;
 import com.cerner.healthe.direct.im.packets.CredRequest;
 
 /**
- * This class handles the operations of an outgoing file transfer.
+ * This class handles the operations of an outgoing file transfer.  The sender takes on the Jingle role
+ * of the initiator and negotiates a SOCKS5 transfer with with the responder.  If SOCKS5 fails, the transfer
+ * will fall back to an in-band (and slow) file transfer.
  * @author Greg Meyer
  * @since 1.0
  *
  */
 public class OutgoingFileTransport implements JingleSessionHandler
-{
-	public final static String NAMESPACE = JingleFileTransfer.NAMESPACE_V5;
+{	
+	protected static int PROXY_TYPE_PREFERENCE = 10;
 	
-	protected static ExecutorService sendFileExecutor;
+	protected static ExecutorService negotiateTransferExecutor;
 
+	protected static ExecutorService transferFileExecutor;
+	
 	protected final AbstractXMPPConnection con;
 	
 	protected final JingleS5BTransportManager jingleS5Manager;
 	
 	protected final JingleManager jingleManager;
 	
-	protected FileTransferState transferState;
-	
 	protected String streamId;
 	
-	protected Bytestream.StreamHost streamhost;
+	protected Map<String, Bytestream.StreamHost> candidateStreamhosts;
 	
 	protected EntityFullJid recipFullJid;
 	
 	protected final JingleUtil util;
 	
-	protected String candidateId; 
+	protected String selectedCandidateId; 
 	
 	protected String dstAddressHashString;
 	
+	protected File sendFile;
+	
+	protected List<FileTransferDataListener> fileTransferDataListeners;
+	
 	static
 	{
-		sendFileExecutor = Executors.newSingleThreadExecutor();	
+		negotiateTransferExecutor = Executors.newSingleThreadExecutor();	
+		
+		transferFileExecutor = Executors.newSingleThreadExecutor();	
 	}
 	
 	public OutgoingFileTransport(AbstractXMPPConnection con)
 	{
 		this.con = con;
-		
-		this.transferState = FileTransferState.SESSION_UNKNOWN;
 		
 		this.jingleS5Manager = (JingleS5BTransportManager)JingleTransportMethodManager.getTransportManager(con, JingleS5BTransport.NAMESPACE_V1);
 		
@@ -93,21 +109,38 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		this.jingleManager = JingleManager.getInstanceFor(con);
 		
 		this.util = new JingleUtil(con);
+		
+		this.fileTransferDataListeners = new ArrayList<>();
 	}
 
+	public void addFileTransferDataListener(FileTransferDataListener listener)
+	{
+		fileTransferDataListeners.add(listener);
+	}
+	
 	public void sendFile(EntityFullJid recipFullJid, File sendFile, String sendMessage) throws IOException
 	{
+		this.sendFile = sendFile;
+		
 		this.recipFullJid = recipFullJid;
 		
 		final JingleUtil util = new JingleUtil(con);
 		
+		
+		// Generate the list of candidate stream hosts
+		List<Bytestream.StreamHost> streamHosts = null;
 		try
 		{
-			streamhost = jingleS5Manager.getAvailableStreamHosts().get(0);
+			streamHosts = jingleS5Manager.getAvailableStreamHosts();
 		} 
 		catch (XMPPErrorException | NotConnectedException | NoResponseException | InterruptedException e)
 		{
 			throw new IOException("Could not get stream host information for proxy server.", e);
+		}
+		
+		if (streamHosts == null || streamHosts.size() == 0)
+		{
+			throw new IOException("Your TIM+ server is not advertising any proxy servers.");
 		}
 		
 		/*
@@ -121,56 +154,94 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		/*
 		 * The content description
 		 */
-		@SuppressWarnings("unchecked")
 		final JingleContentDescription desc = new JingleFileTransfer(Collections.singletonList(jingleFile));
 		
-		/*
-		 * The content transport proxy candidate
-		 */
-		candidateId = FileTransferNegotiator.getNextStreamID();
-		final JingleS5BTransportCandidate candidate = new JingleS5BTransportCandidate(candidateId, streamhost.getAddress(), 
-				streamhost.getJID(), 7777, 1, JingleS5BTransportCandidate.Type.proxy);
-		
-	
 		// Send the file offer and wait for an ACK
-		this.transferState = FileTransferState.SESSION_INITIATE;
 		try
 		{
-			String dstAddress = this.streamId + con.getUser().toString() + this.recipFullJid.toString();
-			MessageDigest digest = MessageDigest.getInstance("SHA1");
+			/*
+			 *  Generate a DST address for proxied connections
+			 *  By spec of XEP 0065:
+			 *     DST.ADDR = SHA1 Hash of: (SID + Requester JID + Target JID)
+			 */
+			final String dstAddress = this.streamId + con.getUser().toString() + this.recipFullJid.toString();
+			final MessageDigest digest = MessageDigest.getInstance("SHA1");
 			byte[] hash = digest.digest(dstAddress.getBytes(StandardCharsets.UTF_8));
 			dstAddressHashString = Hex.encodeHexString(hash);
-			
-			JingleS5BTransport.Builder builder = JingleS5BTransport.getBuilder();
-			builder.addTransportCandidate(candidate).setStreamId(streamId).setMode(Bytestream.Mode.tcp).setDestinationAddress(dstAddressHashString).build();
-			final JingleS5BTransport transport = builder.build();
-			
-			
+		}
+		catch (NoSuchAlgorithmException e)
+		{
+			throw new IOException("Failed to generate DST.ADDR for proxy transfer.", e);
+		}
+		
+
+		final JingleS5BTransport.Builder builder = JingleS5BTransport.getBuilder();
+		
+		/*
+		 * Add the candidates to the session offer
+		 */
+		candidateStreamhosts = new HashMap<>();
+		for (Bytestream.StreamHost streamhost : streamHosts)
+		{
 			/*
-			 * The session-initiate request
+			 *  By spec of XEP 0260, priority is calculated using the following formula
+			 *  
+			 *  (2^16)*(type preference) + (local preference)
+			 *  Type Proxy = 10
+			 *  
+			 *  Pragmatically, all candidates will have the same preference unless
+			 *  additional code is added to bost the local preference.
 			 */
-			Jingle fileOffer = util.createSessionInitiateFileOffer(recipFullJid, streamId, JingleContent.Creator.initiator, 
-					"file-offer", desc, transport);			
+			int priority = (2^16)*(PROXY_TYPE_PREFERENCE) + getStreamhostLocalPreference(streamhost);
+			final String candidateId = FileTransferNegotiator.getNextStreamID();
 			
-			final StanzaCollector fileOfferCollector = con.createStanzaCollectorAndSend(fileOffer);
+			candidateStreamhosts.put(candidateId, streamhost);
 			
-			// get the initial ack
-			IQ result = fileOfferCollector.nextResultOrThrow();
+			final JingleS5BTransportCandidate candidate = new JingleS5BTransportCandidate(candidateId, streamhost.getAddress(), 
+				streamhost.getJID(), 7777, priority, JingleS5BTransportCandidate.Type.proxy);
+			builder.addTransportCandidate(candidate).setStreamId(streamId).setMode(Bytestream.Mode.tcp).setDestinationAddress(dstAddressHashString).build();
+		}
+		
+		final JingleS5BTransport transport = builder.build();
+		
+		/*
+		 * The session-initiate request
+		 */
+		final Jingle fileOffer = util.createSessionInitiateFileOffer(recipFullJid, streamId, JingleContent.Creator.initiator, 
+				"file-offer", desc, transport);			
+		
+		// Send the file offer in a session-initiate message
+		StanzaCollector fileOfferCollector;
+		System.out.println("Sending file transfer session-initiate message.");
+		try
+		{
+			fileOfferCollector = con.createStanzaCollectorAndSend(fileOffer);
+		}
+		catch (Exception e)
+		{
+			throw new IOException("Failed to send session-initiate message.", e);
+		}
+		
+		try 
+		{
+			// Make sure the session-initiate was acknowledged
+			final IQ result = fileOfferCollector.nextResultOrThrow();
 			
 			if (result != null && result instanceof EmptyResultIQ)
 			{
 				// setup the session handler
 				jingleManager.registerJingleSessionHandler(recipFullJid, streamId, this);
 				
-				this.transferState = FileTransferState.SESSION_INITIATE_ACK;
-				System.out.println("Session request was acked.");
-				
+				System.out.println("File transfer session-initiate was acknowledged.  Waiting for the recipieint to accept the session");
 			}
+			else
+				throw new IOException("The recipeint did not acknowledge the session-initiate request");
 		}
-		catch (Exception e)
+		catch (NoResponseException | XMPPErrorException |
+                InterruptedException | NotConnectedException e)
 		{
 			jingleManager.unregisterJingleSessionHandler(recipFullJid, streamId, this);
-			throw new IOException("Error sending file offer request.", e);
+			throw new IOException("Failed to receive an acknowledgment of the session-iniate request", e);
 		}
 	}
 
@@ -179,10 +250,8 @@ public class OutgoingFileTransport implements JingleSessionHandler
 	{
 		// check if this is a session accept
 		if (jingle.getAction() == JingleAction.session_accept)
-		{
-			this.transferState = FileTransferState.SESSION_ACCEPT;
-			
-			System.out.println("Acking session accept.");
+		{	
+			System.out.println("The recipient accepted the file transfer session.  Sending a session-accept acknowledgment");
 			
 			// by spec, we return an empty IQ result
 			final EmptyResultIQ result = new EmptyResultIQ();
@@ -190,8 +259,6 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			result.setTo(jingle.getFrom());
 			result.setType(Type.result);
 			result.setStanzaId(jingle.getStanzaId());
-			
-			this.transferState = FileTransferState.SESSION_ACCEPT_ACK;
 			
 			return result;
 		}
@@ -201,7 +268,12 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			{
 				case CANDIDATE_USED:
 				{
-					System.out.println("Acking responder candidate used.");
+					final JingleS5BTransportInfo.CandidateUsed candidateUsed = 
+							(JingleS5BTransportInfo.CandidateUsed)jingle.getContents().get(0).getTransport().getInfo();
+					
+					System.out.println("The recipient selected a proxy server with candidate ID " + candidateUsed.getCandidateId());
+					
+					selectedCandidateId = candidateUsed.getCandidateId();
 					
 					// by spec, we return an empty IQ result
 					final EmptyResultIQ result = new EmptyResultIQ();
@@ -211,22 +283,25 @@ public class OutgoingFileTransport implements JingleSessionHandler
 					result.setStanzaId(jingle.getStanzaId());
 					
 					// start up the connection to our proxy server and manage the transfer
-					sendFileExecutor.execute(new Socks5ConnectionManager());
+					negotiateTransferExecutor.execute(new Socks5ConnectionManager());
 					
 					return result;
 				}
 				case CANDIDATE_ACTIVATED:
 				{
+					/* no-op as the initator will send the activate command */
 					break;
 				}
 				case CANDIATE_ERROR:
 				{
-					
+					System.out.println("Recieved a proxy-error from the responder.");
 					
 					break;
 				}	
 				case PROXY_ERROR:
 				{
+					System.out.println("Recieved a proxy-error from the responder.");
+					
 					break;
 				}	
 				case UNKNOWN:
@@ -250,29 +325,70 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		@Override
 		public void run()
 		{
+			// get the selected stream host using the selected CID
+			final Bytestream.StreamHost selectedStreamhost = candidateStreamhosts.get(selectedCandidateId);
+					
+			if (selectedStreamhost == null)
+			{
+				System.out.println("The recipient selected a proxy server not in the candidate list: aborting SOCKS5 transport.");
+				
+				// The candidate is not found in the candidate list
+				// Send a proxy error	
+				final Jingle proxyError = createTransportInfoMessage(JingleS5BTransportInfo.ProxyError.INSTANCE);
+				con.sendIqRequestAsync(proxyError);
+
+				return;
+			}
+			
 			System.out.println("Attempting to connect to proxy server.");
 			
 			// connect to the stream host
-			final AuthSocks5Client sock5Client = new AuthSocks5Client(streamhost, dstAddressHashString, con, streamId, recipFullJid);
+			final AuthSocks5Client sock5Client = new AuthSocks5Client(selectedStreamhost, dstAddressHashString, con, streamId, recipFullJid);
 			
+			CredRequest creds = null;
 			try
 			{
 				// get a one time user name password
 				final CredRequest request = new CredRequest();
-				request.setTo(streamhost.getJID());
+				request.setTo(selectedStreamhost.getJID());
 				request.setType(IQ.Type.get);
 
-				final CredRequest creds = (CredRequest)con.createStanzaCollectorAndSend(request).nextResultOrThrow();
+				creds = (CredRequest)con.createStanzaCollectorAndSend(request).nextResultOrThrow();
+			
+			}
+			catch (Exception e)
+			{
+				System.out.println("Failed to get one time proxy server username/password: aborting SOCKS5 transport.");
 				
+				// Can't get a user/pass
+				// Send a proxy error	
+				final Jingle proxyError = createTransportInfoMessage(JingleS5BTransportInfo.ProxyError.INSTANCE);
+				con.sendIqRequestAsync(proxyError);
 				
+				return;
+			}
+			
+			Socket socket = null;
+			try
+			{
 				// creation of the socket connects and authenticates
-				Socket socket = sock5Client.getSocket(10000, creds.getSubject(), creds.getSecret());
+				socket = sock5Client.getSocket(10000, creds.getSubject(), creds.getSecret());
+			}
+			catch(Exception e)
+			{
+				// The candidate is not found in the candidate list
+				// Send a proxy error	
+				System.out.println("Failed to create socket connection.");
 				
+				
+				final Jingle proxyError = createTransportInfoMessage(JingleS5BTransportInfo.ProxyError.INSTANCE);
+				con.sendIqRequestAsync(proxyError);
+			}
+			
+			try
+			{
 				// send the candidate used message
-				final Jingle cadidateUsed = createTransportInfoMessage(new JingleS5BTransportInfo.CandidateUsed(candidateId));
-				
-				
-				transferState = FileTransferState.INITIATOR_CANDIDATE_USED;
+				final Jingle cadidateUsed = createTransportInfoMessage(new JingleS5BTransportInfo.CandidateUsed(selectedCandidateId));
 				
 				System.out.println("Sending initiator candidiate used.");
 				
@@ -281,27 +397,33 @@ public class OutgoingFileTransport implements JingleSessionHandler
 				
 				if (result != null && result instanceof EmptyResultIQ)
 				{
-					transferState = FileTransferState.INITIATOR_CANDIDATE_USED;
 					
 					System.out.println("Activiating proxy");
 					
 					// activate the stream
 					sock5Client.activate();
 					
-					final Jingle cadidateActiviate = createTransportInfoMessage(new JingleS5BTransportInfo.CandidateActivated(candidateId));
+					final Jingle cadidateActiviate = createTransportInfoMessage(new JingleS5BTransportInfo.CandidateActivated(selectedCandidateId));
 					
 					System.out.println("Sending candidate active.");
 					
 					con.sendIqRequestAsync(cadidateActiviate);
+					
+					// start sending the file on the file transfer thread
+					transferFileExecutor.execute(new Socks5WriteManager(socket));
 				}
-				
-				// start transferring data
-				
 			}
-			catch (Exception e)
+			catch(Exception e)
 			{
-				e.printStackTrace();
+				System.out.println("Failed to active the session.");
+				
+				// Couldn't active the proxy stream
+				// Send a proxy error	
+				
+				final Jingle proxyError = createTransportInfoMessage(JingleS5BTransportInfo.ProxyError.INSTANCE);
+				con.sendIqRequestAsync(proxyError);
 			}
+
 		}
 	}
 	
@@ -325,5 +447,93 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		jingle.setTo(recipFullJid);
 		
 		return jingle;
+	}
+	
+	/**
+	 * Allows for specific streamhosts to be assigned custom local preference. Defaults to value of 0
+	 * if no special preference is found.
+	 * @param streamHost The stream host to assign a custom preference to.
+	 * @return The steamhosts local preference.
+	 */
+	public int getStreamhostLocalPreference(Bytestream.StreamHost streamHost)
+	{
+		/*
+		 * default to 0; 
+		 */
+		return 0;
+	}
+	
+	protected class Socks5WriteManager implements Runnable
+	{
+		protected final Socket socket;
+		
+		public Socks5WriteManager(Socket socket)
+		{
+			this.socket = socket;
+		}
+		
+		@SuppressWarnings("deprecation")
+		@Override
+		public void run()
+		{
+			System.out.println("Beginning the file transfer to the target.");
+			
+			try (final OutputStream outStream = socket.getOutputStream(); final InputStream fileInstream = new BufferedInputStream(new FileInputStream(sendFile));)
+			{				
+				// Allocate a 16K buffer
+				byte[] buffer = new byte[16384];
+				long writtenSoFar = 0;
+				int read = fileInstream.read(buffer);
+				writtenSoFar += read;
+				while (read > -1)
+				{
+					outStream.write(buffer, 0, read);
+					
+					for (FileTransferDataListener listener : fileTransferDataListeners )
+					{
+						// don't let an exception in the listener kill the transport
+						try 
+						{
+							if (listener.dataTransfered(writtenSoFar) != 0)
+							{
+								// the transfer was interrupted by the listener
+								
+								System.out.println("File transfer was interrupted by a transfer listener.  Terminating the session");
+								
+								// terminate the session
+								// send the session terminate message
+								final Jingle sessionTerminate = util.createSessionTerminateCancel(recipFullJid, streamId);
+
+								con.sendIqRequestAsync(sessionTerminate);
+								return;
+							}
+						}
+						catch (Throwable t) {/*no-op*/}
+						
+					}
+					
+					read = fileInstream.read(buffer);
+					writtenSoFar += read;
+				}
+				
+				System.out.println("File transfer is successful.  Terminating the session");
+	
+				
+				// send the session terminate message
+				final Jingle sessionTerminate = util.createSessionTerminateSuccess(recipFullJid, streamId);
+
+				con.sendIqRequestAsync(sessionTerminate);
+			}
+			catch (Exception e)
+			{
+				
+			}
+			finally 
+			{
+				jingleManager.unregisterJingleSessionHandler(recipFullJid, streamId, OutgoingFileTransport.this);
+				// close the socket
+				IOUtils.closeQuietly(socket);
+			}
+		}
 	}
 }
