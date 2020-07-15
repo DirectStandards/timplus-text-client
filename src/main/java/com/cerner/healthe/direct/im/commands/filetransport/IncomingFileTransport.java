@@ -1,5 +1,6 @@
 package com.cerner.healthe.direct.im.commands.filetransport;
 
+import java.io.InputStream;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -23,7 +24,6 @@ import org.jivesoftware.smackx.jingle.JingleUtil;
 import org.jivesoftware.smackx.jingle.element.Jingle;
 import org.jivesoftware.smackx.jingle.element.JingleAction;
 import org.jivesoftware.smackx.jingle.element.JingleContent;
-import org.jivesoftware.smackx.jingle.element.JingleContentTransport;
 import org.jivesoftware.smackx.jingle.element.JingleContentTransportCandidate;
 import org.jivesoftware.smackx.jingle.element.JingleReason;
 import org.jivesoftware.smackx.jingle.element.JingleContent.Creator;
@@ -53,6 +53,8 @@ public class IncomingFileTransport implements JingleHandler, JingleSessionHandle
 	
 	protected static ExecutorService acceptFileExecutor;
 	
+	protected static ExecutorService transferFileExecutor;
+	
 	protected String streamId;
 	
 	protected Bytestream.StreamHost selectedStreamhost;
@@ -63,9 +65,13 @@ public class IncomingFileTransport implements JingleHandler, JingleSessionHandle
 	
 	protected String selectedCandidateId; 
 	
+	protected InputStream proxyInputStream; 
+	
 	static
 	{
 		acceptFileExecutor = Executors.newSingleThreadExecutor();	
+		
+		transferFileExecutor = Executors.newSingleThreadExecutor();	
 	}
 	
 	public IncomingFileTransport(AbstractXMPPConnection con)
@@ -176,7 +182,9 @@ public class IncomingFileTransport implements JingleHandler, JingleSessionHandle
 				}
 				case CANDIDATE_ACTIVATED:
 				{
-					// Time to get the transfer going
+					// start reading
+					
+					transferFileExecutor.execute(new TargetSocks5ReadManager());
 					
 					break;
 				}
@@ -264,6 +272,9 @@ public class IncomingFileTransport implements JingleHandler, JingleSessionHandle
 					if (result != null && result instanceof EmptyResultIQ)
 					{
 						// now sit and wait for the sender to send a candidate used message
+						// and activation message
+						proxyInputStream = socket.getInputStream();
+						
 					}
 				}
 				catch (Exception e)
@@ -274,6 +285,42 @@ public class IncomingFileTransport implements JingleHandler, JingleSessionHandle
 		}
 	}
 	
+	
+	protected class TargetSocks5ReadManager implements Runnable
+	{
+		public TargetSocks5ReadManager()
+		{
+			
+		}
+		
+		@Override
+		public void run()
+		{
+			System.out.println("Starting to read file transfer data");
+			
+			try
+			{
+				long readSoFar = 0;
+				byte[] buffer = new byte[4096];
+				int read = proxyInputStream.read(buffer);
+				readSoFar += read;
+				while(read > -1) 
+				{
+					System.out.println("Read " + readSoFar + " bytes so far");
+					
+					read = proxyInputStream.read(buffer);
+					readSoFar += read;
+				}
+				
+				System.out.println("Done reading the file transfer");
+			}
+			catch (Exception e)
+			{
+				e.printStackTrace();
+			}
+			
+		}
+	}
 	
 	protected Jingle createTransportInfoMessage(JingleS5BTransportInfo info)
 	{
