@@ -1,7 +1,6 @@
 package com.cerner.healthe.direct.im.commands;
 
 import java.io.File;
-import java.text.DecimalFormat;
 import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
@@ -15,12 +14,7 @@ import org.jivesoftware.smackx.disco.ServiceDiscoveryManager;
 import org.jivesoftware.smackx.disco.packet.DiscoverInfo;
 import org.jivesoftware.smackx.disco.packet.DiscoverItems;
 import org.jivesoftware.smackx.disco.packet.DiscoverInfo.Identity;
-import org.jivesoftware.smackx.filetransfer.FileTransfer;
-import org.jivesoftware.smackx.filetransfer.FileTransfer.Status;
-import org.jivesoftware.smackx.filetransfer.FileTransferListener;
 import org.jivesoftware.smackx.filetransfer.FileTransferManager;
-import org.jivesoftware.smackx.filetransfer.FileTransferRequest;
-import org.jivesoftware.smackx.filetransfer.IncomingFileTransfer;
 import org.jivesoftware.smackx.filetransfer.Socks5TransferNegotiator;
 import org.jivesoftware.smackx.jingle.JingleManager;
 import org.jivesoftware.smackx.jingle.JingleTransportMethodManager;
@@ -104,20 +98,6 @@ public class FileTransferCommands
 		
 		transferManager = FileTransferManager.getInstanceFor(con);
 		
-		transferManager.addFileTransferListener(new FileTransferListener() 
-		{
-			public void fileTransferRequest(FileTransferRequest request) 
-			{
-				try
-				{
-					handleFileTransferRequest(request);
-				}
-				catch (Exception e)
-				{
-					System.err.println("Error in incoming file transfer: " + e.getMessage());
-				}
-			}
-		});
 	}
 	
 	@Command(name = "SendFile", usage = SEND_FILE)
@@ -140,38 +120,11 @@ public class FileTransferCommands
 		File sendFile = new File(file);
 		final FileDetails fileDetail = FileDetails.fileToDetails(sendFile);
 		
-		
-		OutgoingFileTransport outTransport = new OutgoingFileTransport(con);
-		outTransport.addFileTransferDataListener(new SendFileStatusListener(fileDetail.getSize()));
-		outTransport.sendFile(fullJid, new File(file), message);
-		
 		try
 		{		
-			/*
-			OutputStream outStream = this.s5Manager.createOutgoingStream(FileTransferNegotiator.getNextStreamID(), con.getUser(), fullJid);
-			
-			
-			final OutgoingFileTransfer transfer = transferManager.createOutgoingFileTransfer(fullJid);
-			//Send the file
-			transfer.sendFile(new File(file), message);
-			
-			System.out.println("File transfer request sent\r\n");
-			
-			sendFileMonitorExecutor.execute(new Runnable()
-			{
-				public void run()
-				{
-					try
-					{
-						monitorFileTransfer(transfer);
-					}
-					catch (Exception e)
-					{
-						System.err.println("Error in sending file " + transfer.getFileName() + ":" + e.getMessage());
-					}
-				}
-			});
-			*/
+			OutgoingFileTransport outTransport = new OutgoingFileTransport(con);
+			outTransport.addFileTransferDataListener(new SendFileStatusListener(fileDetail.getSize()));
+			outTransport.sendFile(fullJid, new File(file), message);
 		}
 		catch (Exception e)
 		{
@@ -236,60 +189,7 @@ public class FileTransferCommands
 		final String caSubject = (creds.getProxyServerCA() == null) ? "<None>" : creds.getProxyServerCA().getSubjectDN().toString();
 		System.out.println("\tProxy server CA Subject: " + caSubject);
 	}
-	
-	protected synchronized void handleFileTransferRequest(FileTransferRequest request) throws Exception
-	{
-		System.out.println("Request from " + request.getRequestor() + " to send file.");
-		System.out.println("\tFile Name: " + request.getFileName());
-		System.out.println("\tFile Size: " + request.getFileSize() + " bytes");
 		
-		if (!acceptFiles)
-		{
-			request.reject();
-			System.out.println("\r\nFile transfer request rejected");
-			return;
-		}
-
-		System.out.println("\r\nAccepting file transfer.");
-		final IncomingFileTransfer transfer = request.accept();
-		transfer.receiveFile(new File(request.getFileName()));
-		
-
-		monitorFileTransfer(transfer);
-	}
-	
-	protected void monitorFileTransfer(FileTransfer transfer) throws Exception
-	{
-		Status currentStatus = null;
-		while(!transfer.isDone()) 
-		{		
-
-			if (transfer.getStatus() != currentStatus)
-			{
-				currentStatus = transfer.getStatus();
-				System.out.println("Transfer status: " + transfer.getStatus());
-			}
-			if (transfer.getStatus().equals(Status.in_progress))
-			{
-				final DecimalFormat df = new DecimalFormat("#.#");
-				
-				String percent = df.format((transfer.getProgress() * 100.0d));
-				System.out.println("Transfer progress " + percent + "%");
-			}
-
-			Thread.sleep(500);
-		}
-		
-		System.out.println("Final transfer status: " + transfer.getStatus());
-		if (transfer.getStatus().equals(Status.error)) 
-		{
-			System.out.println("Transfer errored out with exception: " + transfer.getException().getMessage());
-			transfer.getException().printStackTrace();
-			return;
-		} 	
-
-	}
-	
 	protected Bytestream getDomainFTProxySettings(String domain) throws Exception
 	{
 		Bytestream retVal = null;
@@ -360,36 +260,6 @@ public class FileTransferCommands
 		public int dataTransfered(long transferedSoFar)
 		{
 			double ratio = (double)transferedSoFar/(double)totalBytesToSend;
-			
-			int percent =  (int) (ratio * 100);
-			if (percent != currentPercent)
-			{
-				System.out.println("File transfer completion: " + percent + "%");
-				currentPercent = percent;
-			}
-			
-			
-			return 0;
-		}
-	}
-	
-	protected class ReceiveFileStatusListener implements FileTransferDataListener
-	{
-		protected long totalBytesToReceive;
-		
-		protected int currentPercent;
-		
-		public ReceiveFileStatusListener(long totalBytesToReceive) 
-		{
-			this.totalBytesToReceive = totalBytesToReceive;
-			
-			currentPercent = 0;
-		}
-
-		@Override
-		public int dataTransfered(long transferedSoFar)
-		{
-			double ratio = (double)transferedSoFar/(double)totalBytesToReceive;
 			
 			int percent =  (int) (ratio * 100);
 			if (percent != currentPercent)
