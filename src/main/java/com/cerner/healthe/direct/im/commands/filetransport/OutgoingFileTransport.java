@@ -387,7 +387,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			try
 			{
 				// creation of the socket connects and authenticates
-				socket = sock5Client.getSocket(10000, creds.getSubject(), creds.getSecret());
+				socket = sock5Client.getSocket(10000, creds.getSubject(), creds.getSecret(), creds.getProxyServerCA());
 			}
 			catch(Exception e)
 			{

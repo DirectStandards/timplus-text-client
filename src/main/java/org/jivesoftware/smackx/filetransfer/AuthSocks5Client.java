@@ -9,6 +9,7 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
 import java.security.SecureRandom;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
@@ -27,6 +28,8 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
 
 import org.jivesoftware.smack.SmackException;
@@ -42,6 +45,7 @@ import org.jivesoftware.smackx.bytestreams.socks5.Socks5Utils;
 import org.jivesoftware.smackx.bytestreams.socks5.packet.Bytestream;
 import org.jivesoftware.smackx.bytestreams.socks5.packet.Bytestream.StreamHost;
 import org.jxmpp.jid.Jid;
+import org.nhindirect.common.crypto.CryptoExtensions;
 
 public class AuthSocks5Client extends Socks5Client
 {
@@ -61,7 +65,7 @@ public class AuthSocks5Client extends Socks5Client
         this.target = target;
 	}
 	
-    public Socket getSocket(int timeout, String username, String password) throws IOException, InterruptedException,
+    public Socket getSocket(int timeout, String username, String password, X509Certificate caCert) throws IOException, InterruptedException,
     TimeoutException, SmackException, XMPPException 
     {
     	// wrap connecting in future for timeout
@@ -79,10 +83,21 @@ public class AuthSocks5Client extends Socks5Client
     			
     			// initialize connection to SOCKS5 proxy
     			try 
-    			{   			
+    			{   		
+    				final KeyStore caKeyStore = KeyStore.getInstance("PKCS12");
+    				caKeyStore.load(null, null);
+    				caKeyStore.setCertificateEntry("CA", caCert);
+    				
+    				TrustManagerFactory tmf = TrustManagerFactory
+    					    .getInstance(TrustManagerFactory.getDefaultAlgorithm());
+    				tmf.init(caKeyStore);
+    				
+    				
+    				final TrustManager[] trustManagers = tmf.getTrustManagers();
+    				
 	    			// initialize socket
 	    			SSLContext sslContext = SSLContext.getInstance("TLSv1.2");
-	    			sslContext.init(null, new TrustManager[] { new TrustManager()}, new SecureRandom());
+	    			sslContext.init(null, trustManagers, new SecureRandom());
 	    			SSLSocketFactory socketFactory = sslContext.getSocketFactory();
 	    			
 	    			final SNIHostName serverName = new SNIHostName(streamHost.getJID().toString());
@@ -279,19 +294,6 @@ public class AuthSocks5Client extends Socks5Client
     	return authCmd;
     	
     }
-    
-    public class TrustManager implements X509TrustManager
-    {
-        public void checkClientTrusted(X509Certificate[] chain, String authType) throws CertificateException {
-        }
-
-        public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
-        }
-
-        public X509Certificate[] getAcceptedIssuers() {
-            return null;
-        }
-    };
 
     private byte[] createSocks5ConnectRequest() {
         byte[] addr;

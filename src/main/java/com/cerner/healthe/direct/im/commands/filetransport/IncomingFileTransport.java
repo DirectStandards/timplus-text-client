@@ -300,7 +300,7 @@ public class IncomingFileTransport implements JingleHandler
 					final CredRequest creds = (CredRequest)con.createStanzaCollectorAndSend(request).nextResultOrThrow();
 					
 					// creation of the socket connects and authenticates
-					final Socket socket = sock5Client.getSocket(10000, creds.getSubject(), creds.getSecret());
+					final Socket socket = sock5Client.getSocket(10000, creds.getSubject(), creds.getSecret(), creds.getProxyServerCA());
 					
 					ftSession.selectedCandidateId = s5can.getCandidateId();
 					
