@@ -6,25 +6,24 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.List;
 
-import org.apache.commons.io.IOUtils;
+import org.jivesoftware.smackx.filetransfer.IBBTransferNegotiator;
 import org.jivesoftware.smackx.jingle.JingleManager;
 import org.jivesoftware.smackx.jingle.JingleUtil;
 import org.jivesoftware.smackx.jingle.element.Jingle;
 
-public class Socks5WriteManager implements Runnable
+public class IBBWriteManager implements Runnable
 {
 	protected final FileTransferSession ftSession;
 	
 	protected final List<FileTransferDataListener> fileTransferDataListeners;
 	
-	protected final JingleUtil util;
-	
 	protected final JingleManager jingleManager;
 	
-	public Socks5WriteManager(FileTransferSession ftSession, List<FileTransferDataListener> fileTransferDataListeners)
+	protected final JingleUtil util;
+	
+	public IBBWriteManager(FileTransferSession ftSession, List<FileTransferDataListener> fileTransferDataListeners)
 	{
 		this.ftSession = ftSession;
-		
 		this.fileTransferDataListeners = fileTransferDataListeners;
 		
 		this.util = new JingleUtil(ftSession.con);
@@ -32,17 +31,20 @@ public class Socks5WriteManager implements Runnable
 		this.jingleManager = JingleManager.getInstanceFor(ftSession.con);
 	}
 	
-	@SuppressWarnings("deprecation")
 	@Override
 	public void run()
 	{
-		System.out.println("Beginning the file transfer to the target.");
+		System.out.println("Opening In-Band file transfer");
 		
-		try (final OutputStream outStream = ftSession.proxySocket.getOutputStream(); 
+		final IBBTransferNegotiator inbandTransferManager = new Negotiator();
+		
+		try(OutputStream outStream = inbandTransferManager.createOutgoingStream(ftSession.streamId, ftSession.con.getUser(), ftSession.fileTransferTargetJID);
 				final InputStream fileInstream = new BufferedInputStream(new FileInputStream(ftSession.sendFile)))
-		{				
-			// Allocate a 16K buffer
-			byte[] buffer = new byte[16384];
+		{
+			System.out.println("In-Band file stream is open.  Starting to send data.");
+			
+			// Allocate a 4K buffer
+			byte[] buffer = new byte[4096];
 			long writtenSoFar = 0;
 			int read = fileInstream.read(buffer);
 			writtenSoFar += read;
@@ -77,17 +79,18 @@ public class Socks5WriteManager implements Runnable
 				writtenSoFar += read;
 			}
 			
-			System.out.println("File transfer is successful.  Terminating the session");
+			System.out.println("In-banbd File transfer is successful.  Terminating the session");
 
 			
 			// send the session terminate message
 			final Jingle sessionTerminate = util.createSessionTerminateSuccess(ftSession.fileTransferTargetJID, ftSession.streamId);
 
 			ftSession.con.sendIqRequestAsync(sessionTerminate);
+			
 		}
 		catch (Exception e)
 		{
-			System.out.println("Error when transfering the file.  Terminating the session");
+			System.out.println("Error when transfering the file via In-band file stream.  Terminating the session");
 			
 			// terminate the session
 			// send the session terminate message
@@ -98,8 +101,17 @@ public class Socks5WriteManager implements Runnable
 		finally 
 		{
 			jingleManager.unregisterJingleSessionHandler(ftSession.fileTransferTargetJID, ftSession.streamId, ftSession.sessionHandler);
-			// close the socket
-			IOUtils.closeQuietly(ftSession.proxySocket);
+			
+			// assuming the closer of the output stream will send the appropriate byte stream close stanzas
+		}		
+	
+	}
+	
+	public class Negotiator extends IBBTransferNegotiator
+	{
+		public Negotiator()
+		{
+			super(ftSession.con);
 		}
 	}
 }

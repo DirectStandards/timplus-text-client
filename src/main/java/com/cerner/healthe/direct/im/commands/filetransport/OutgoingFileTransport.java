@@ -38,6 +38,7 @@ import org.jivesoftware.smackx.jingle.element.JingleAction;
 import org.jivesoftware.smackx.jingle.element.JingleContent;
 import org.jivesoftware.smackx.jingle.element.JingleContentDescription;
 import org.jivesoftware.smackx.jingle.element.JingleContent.Creator;
+import org.jivesoftware.smackx.jingle.transports.jingle_ibb.element.JingleIBBTransport;
 import org.jivesoftware.smackx.jingle.transports.jingle_s5b.JingleS5BTransportManager;
 import org.jivesoftware.smackx.jingle.transports.jingle_s5b.elements.JingleS5BTransport;
 import org.jivesoftware.smackx.jingle.transports.jingle_s5b.elements.JingleS5BTransportCandidate;
@@ -276,6 +277,22 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			
 			return result;			
 		}
+		else if (jingle.getAction() == JingleAction.transport_accept)
+		{
+			// Start up the IBB transfer proccess.
+			System.out.println("The recipient accepted the transport change request.  Acknowledging the request.");
+			
+			// by spec, we return an empty IQ result
+			final EmptyResultIQ result = new EmptyResultIQ();
+			result.setFrom(jingle.getTo());
+			result.setTo(jingle.getFrom());
+			result.setType(Type.result);
+			result.setStanzaId(jingle.getStanzaId());
+			
+			transferFileExecutor.execute(new IBBWriteManager(ftSession, fileTransferDataListeners));
+			
+			return result;
+		}
 		else if (jingle.getAction() == JingleAction.transport_info)
 		{
 			switch (TransportInfoType.getTransportInfoType(jingle.getContents().get(0)))
@@ -314,6 +331,8 @@ public class OutgoingFileTransport implements JingleSessionHandler
 						System.out.println("Attempting to fall back to In-Band Bytestream mode");
 					}
 					
+					executeIBBFallBack();
+					
 					break;
 				}	
 				case PROXY_ERROR:
@@ -323,6 +342,9 @@ public class OutgoingFileTransport implements JingleSessionHandler
 					{
 						System.out.println("Attempting to fall back to In-Band Bytestream mode");
 					}
+					
+					executeIBBFallBack();
+					
 					break;
 				}	
 				case UNKNOWN:
@@ -484,5 +506,43 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		 * default to 0; 
 		 */
 		return 0;
+	}
+	
+	protected void executeIBBFallBack()
+	{
+		negotiateTransferExecutor.execute(new Runnable()
+		{
+			@Override
+			public void run()
+			{
+				System.out.println("Sending transfer replace message.");
+				// send the transfer replace message
+				
+				final Jingle transportReplace = util.createTransportReplace(ftSession.fileTransferTargetJID, con.getUser(), 
+						ftSession.streamId, JingleContent.Creator.initiator, "file-offer", new JingleIBBTransport((short)4096, ftSession.streamId));
+				
+				try
+				{
+					IQ result = con.createStanzaCollectorAndSend(transportReplace).nextResultOrThrow();
+					if (result != null && result instanceof EmptyResultIQ)
+					{						
+						System.out.println("Received acknowledgement of transport replace.  Waiting for a transport-accept message.");
+					}
+					
+				}
+				catch (NoResponseException | XMPPErrorException |
+		                InterruptedException | NotConnectedException e)
+				{
+					System.out.println("Did not get an acknowlegment for the transport replace.  Terminating session.");
+					
+					final Jingle sessionTerminate = util.createSessionTerminateFailedTransport(ftSession.initiatorJID, ftSession.streamId);
+
+					con.sendIqRequestAsync(sessionTerminate);
+					
+					jingleManager.unregisterJingleSessionHandler(ftSession.fileTransferTargetJID, ftSession.streamId, OutgoingFileTransport.this);
+					
+				}
+			}
+		});
 	}
 }

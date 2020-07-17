@@ -10,6 +10,9 @@ import java.util.concurrent.Executors;
 
 import org.jivesoftware.smack.AbstractXMPPConnection;
 import org.jivesoftware.smack.StanzaCollector;
+import org.jivesoftware.smack.SmackException.NoResponseException;
+import org.jivesoftware.smack.SmackException.NotConnectedException;
+import org.jivesoftware.smack.XMPPException.XMPPErrorException;
 import org.jivesoftware.smack.packet.EmptyResultIQ;
 import org.jivesoftware.smack.packet.IQ;
 import org.jivesoftware.smack.packet.IQ.Type;
@@ -26,6 +29,7 @@ import org.jivesoftware.smackx.jingle.element.JingleContent;
 import org.jivesoftware.smackx.jingle.element.JingleContentTransportCandidate;
 import org.jivesoftware.smackx.jingle.element.JingleReason;
 import org.jivesoftware.smackx.jingle.element.JingleContent.Creator;
+import org.jivesoftware.smackx.jingle.transports.jingle_ibb.element.JingleIBBTransport;
 import org.jivesoftware.smackx.jingle.transports.jingle_s5b.elements.JingleS5BTransport;
 import org.jivesoftware.smackx.jingle.transports.jingle_s5b.elements.JingleS5BTransportCandidate;
 import org.jivesoftware.smackx.jingle.transports.jingle_s5b.elements.JingleS5BTransportInfo;
@@ -246,6 +250,22 @@ public class IncomingFileTransport implements JingleHandler
 					}
 				}
 			}
+			else if (jingle.getAction() == JingleAction.transport_replace)
+			{
+				System.out.println("The initiator has requested to replace the transport with In-Band bytestreams.");
+				System.out.println("Acknowledging the transport-replace request.");
+				
+				// by spec, we return an empty IQ result
+				final EmptyResultIQ result = new EmptyResultIQ();
+				result.setFrom(jingle.getTo());
+				result.setTo(jingle.getFrom());
+				result.setType(Type.result);
+				result.setStanzaId(jingle.getStanzaId());
+				
+				executeIBBFallBack();
+				
+				return result;	
+			}
 			else if (jingle.getAction() == JingleAction.session_terminate)
 			{
 				System.out.println("The initiator has terminated the session.");
@@ -334,6 +354,43 @@ public class IncomingFileTransport implements JingleHandler
 					con.sendIqRequestAsync(candidateError);
 				}
 			}
+		}
+		
+		protected void executeIBBFallBack()
+		{
+			acceptFileExecutor.execute(new Runnable()
+			{
+				@Override
+				public void run()
+				{
+					System.out.println("Accepting the transport change.");
+					
+					final Jingle transportAccept = util.createTransportAccept(ftSession.initiatorJID, ftSession.initiatorJID, ftSession.streamId, JingleContent.Creator.initiator, "file-offer",
+							new JingleIBBTransport((short)4096, ftSession.streamId));
+					
+					try
+					{
+						IQ result = con.createStanzaCollectorAndSend(transportAccept).nextResultOrThrow();
+						if (result != null && result instanceof EmptyResultIQ)
+						{						
+							System.out.println("Received acknowledgement of transport accept.  Waiting for a In-Band file stream open message");
+						}
+						
+					}
+					catch (NoResponseException | XMPPErrorException |
+			                InterruptedException | NotConnectedException e)
+					{
+						System.out.println("Did not get an acknowlegment for the transport accept.  Terminating session.");
+						
+						final Jingle sessionTerminate = util.createSessionTerminateFailedTransport(ftSession.initiatorJID, ftSession.streamId);
+
+						con.sendIqRequestAsync(sessionTerminate);
+						
+						jingleManager.unregisterJingleSessionHandler(ftSession.fileTransferTargetJID, ftSession.streamId, TargetSessionManager.this);
+						
+					}
+				}
+			});
 		}
 	}
 	
