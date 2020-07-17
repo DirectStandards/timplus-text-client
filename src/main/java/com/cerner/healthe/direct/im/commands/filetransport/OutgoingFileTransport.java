@@ -1,11 +1,7 @@
 package com.cerner.healthe.direct.im.commands.filetransport;
 
-import java.io.BufferedInputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -20,7 +16,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import org.apache.commons.codec.binary.Hex;
-import org.apache.commons.io.IOUtils;
 import org.jivesoftware.smack.AbstractXMPPConnection;
 import org.jivesoftware.smack.SmackException.NoResponseException;
 import org.jivesoftware.smack.SmackException.NotConnectedException;
@@ -75,21 +70,17 @@ public class OutgoingFileTransport implements JingleSessionHandler
 	
 	protected final JingleManager jingleManager;
 	
-	protected String streamId;
-	
 	protected Map<String, Bytestream.StreamHost> candidateStreamhosts;
-	
-	protected EntityFullJid recipFullJid;
 	
 	protected final JingleUtil util;
 	
-	protected String selectedCandidateId; 
-	
 	protected String dstAddressHashString;
 	
-	protected File sendFile;
-	
 	protected List<FileTransferDataListener> fileTransferDataListeners;
+	
+	protected TransportTypeMode transportMode;
+	
+	protected FileTransferSession ftSession;
 	
 	static
 	{
@@ -104,13 +95,21 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		
 		this.jingleS5Manager = (JingleS5BTransportManager)JingleTransportMethodManager.getTransportManager(con, JingleS5BTransport.NAMESPACE_V1);
 		
-		this.streamId = FileTransferNegotiator.getNextStreamID();
-		
 		this.jingleManager = JingleManager.getInstanceFor(con);
 		
 		this.util = new JingleUtil(con);
 		
 		this.fileTransferDataListeners = new ArrayList<>();
+		
+		this.transportMode = TransportTypeMode.SOCKS5;
+		
+		this.ftSession = new FileTransferSession();
+		
+		ftSession.streamId = FileTransferNegotiator.getNextStreamID();
+		
+		ftSession.con = con;
+		
+		ftSession.sessionHandler = this;
 	}
 
 	public void addFileTransferDataListener(FileTransferDataListener listener)
@@ -120,9 +119,9 @@ public class OutgoingFileTransport implements JingleSessionHandler
 	
 	public void sendFile(EntityFullJid recipFullJid, File sendFile, String sendMessage) throws IOException
 	{
-		this.sendFile = sendFile;
-		
-		this.recipFullJid = recipFullJid;
+		ftSession.sendFile = sendFile;
+		ftSession.fileTransferTargetJID = recipFullJid;
+		ftSession.fileName = sendFile.getName();
 		
 		final JingleUtil util = new JingleUtil(con);
 		
@@ -164,7 +163,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			 *  By spec of XEP 0065:
 			 *     DST.ADDR = SHA1 Hash of: (SID + Requester JID + Target JID)
 			 */
-			final String dstAddress = this.streamId + con.getUser().toString() + this.recipFullJid.toString();
+			final String dstAddress = ftSession.streamId + con.getUser().toString() + ftSession.fileTransferTargetJID.toString();
 			final MessageDigest digest = MessageDigest.getInstance("SHA1");
 			byte[] hash = digest.digest(dstAddress.getBytes(StandardCharsets.UTF_8));
 			dstAddressHashString = Hex.encodeHexString(hash);
@@ -199,7 +198,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			
 			final JingleS5BTransportCandidate candidate = new JingleS5BTransportCandidate(candidateId, streamhost.getAddress(), 
 				streamhost.getJID(), 7777, priority, JingleS5BTransportCandidate.Type.proxy);
-			builder.addTransportCandidate(candidate).setStreamId(streamId).setMode(Bytestream.Mode.tcp).setDestinationAddress(dstAddressHashString).build();
+			builder.addTransportCandidate(candidate).setStreamId(ftSession.streamId).setMode(Bytestream.Mode.tcp).setDestinationAddress(dstAddressHashString).build();
 		}
 		
 		final JingleS5BTransport transport = builder.build();
@@ -207,7 +206,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		/*
 		 * The session-initiate request
 		 */
-		final Jingle fileOffer = util.createSessionInitiateFileOffer(recipFullJid, streamId, JingleContent.Creator.initiator, 
+		final Jingle fileOffer = util.createSessionInitiateFileOffer(recipFullJid, ftSession.streamId, JingleContent.Creator.initiator, 
 				"file-offer", desc, transport);			
 		
 		// Send the file offer in a session-initiate message
@@ -230,7 +229,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			if (result != null && result instanceof EmptyResultIQ)
 			{
 				// setup the session handler
-				jingleManager.registerJingleSessionHandler(recipFullJid, streamId, this);
+				jingleManager.registerJingleSessionHandler(recipFullJid, ftSession.streamId, this);
 				
 				System.out.println("File transfer session-initiate was acknowledged.  Waiting for the recipieint to accept the session");
 			}
@@ -240,7 +239,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		catch (NoResponseException | XMPPErrorException |
                 InterruptedException | NotConnectedException e)
 		{
-			jingleManager.unregisterJingleSessionHandler(recipFullJid, streamId, this);
+			jingleManager.unregisterJingleSessionHandler(recipFullJid, ftSession.streamId, this);
 			throw new IOException("Failed to receive an acknowledgment of the session-iniate request", e);
 		}
 	}
@@ -266,7 +265,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		{
 			System.out.println("The recipient has terminated the session.");
 			
-			jingleManager.unregisterJingleSessionHandler(recipFullJid, streamId, OutgoingFileTransport.this);
+			jingleManager.unregisterJingleSessionHandler(ftSession.fileTransferTargetJID, ftSession.streamId, OutgoingFileTransport.this);
 			
 			// by spec, we return an empty IQ result
 			final EmptyResultIQ result = new EmptyResultIQ();
@@ -288,7 +287,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 					
 					System.out.println("The recipient selected a proxy server with candidate ID " + candidateUsed.getCandidateId());
 					
-					selectedCandidateId = candidateUsed.getCandidateId();
+					ftSession.selectedCandidateId = candidateUsed.getCandidateId();
 					
 					// by spec, we return an empty IQ result
 					final EmptyResultIQ result = new EmptyResultIQ();
@@ -310,13 +309,20 @@ public class OutgoingFileTransport implements JingleSessionHandler
 				case CANDIATE_ERROR:
 				{
 					System.out.println("Recieved a candidate error from the responder.");
+					if (this.transportMode == TransportTypeMode.SOCKS5)
+					{
+						System.out.println("Attempting to fall back to In-Band Bytestream mode");
+					}
 					
 					break;
 				}	
 				case PROXY_ERROR:
 				{
 					System.out.println("Recieved a proxy-error from the responder.");
-					
+					if (this.transportMode == TransportTypeMode.SOCKS5)
+					{
+						System.out.println("Attempting to fall back to In-Band Bytestream mode");
+					}
 					break;
 				}	
 				case UNKNOWN:
@@ -341,7 +347,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		public void run()
 		{
 			// get the selected stream host using the selected CID
-			final Bytestream.StreamHost selectedStreamhost = candidateStreamhosts.get(selectedCandidateId);
+			final Bytestream.StreamHost selectedStreamhost = candidateStreamhosts.get(ftSession.selectedCandidateId);
 					
 			if (selectedStreamhost == null)
 			{
@@ -358,7 +364,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			System.out.println("Attempting to connect to proxy server.");
 			
 			// connect to the stream host
-			final AuthSocks5Client sock5Client = new AuthSocks5Client(selectedStreamhost, dstAddressHashString, con, streamId, recipFullJid);
+			final AuthSocks5Client sock5Client = new AuthSocks5Client(selectedStreamhost, dstAddressHashString, con, ftSession.streamId, ftSession.fileTransferTargetJID);
 			
 			CredRequest creds = null;
 			try
@@ -403,7 +409,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			try
 			{
 				// send the candidate used message
-				final Jingle cadidateUsed = createTransportInfoMessage(new JingleS5BTransportInfo.CandidateUsed(selectedCandidateId));
+				final Jingle cadidateUsed = createTransportInfoMessage(new JingleS5BTransportInfo.CandidateUsed(ftSession.selectedCandidateId));
 				
 				System.out.println("Sending initiator candidiate used.");
 				
@@ -418,14 +424,16 @@ public class OutgoingFileTransport implements JingleSessionHandler
 					// activate the stream
 					sock5Client.activate();
 					
-					final Jingle cadidateActiviate = createTransportInfoMessage(new JingleS5BTransportInfo.CandidateActivated(selectedCandidateId));
+					final Jingle cadidateActiviate = createTransportInfoMessage(new JingleS5BTransportInfo.CandidateActivated(ftSession.selectedCandidateId));
 					
 					System.out.println("Sending candidate active.");
 					
 					con.sendIqRequestAsync(cadidateActiviate);
 					
+					ftSession.proxySocket = socket;
+					
 					// start sending the file on the file transfer thread
-					transferFileExecutor.execute(new Socks5WriteManager(socket));
+					transferFileExecutor.execute(new Socks5WriteManager(ftSession, fileTransferDataListeners));
 				}
 			}
 			catch(Exception e)
@@ -447,10 +455,10 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		Jingle.Builder jb = Jingle.getBuilder();
 		jb.setAction(JingleAction.transport_info)
 		  .setInitiator(con.getUser())
-		  .setSessionId(streamId);
+		  .setSessionId(ftSession.streamId);
 		
 		final JingleS5BTransport transport = 
-				JingleS5BTransport.getBuilder().setStreamId(streamId).setTransportInfo(info).build();
+				JingleS5BTransport.getBuilder().setStreamId(ftSession.streamId).setTransportInfo(info).build();
 		
 		JingleContent.Builder cb = JingleContent.getBuilder();
 		cb.setCreator(Creator.initiator)
@@ -459,7 +467,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		
 		final Jingle jingle = jb.addJingleContent(cb.build()).build();
 		jingle.setFrom(con.getUser());
-		jingle.setTo(recipFullJid);
+		jingle.setTo(ftSession.fileTransferTargetJID);
 		
 		return jingle;
 	}
@@ -476,79 +484,5 @@ public class OutgoingFileTransport implements JingleSessionHandler
 		 * default to 0; 
 		 */
 		return 0;
-	}
-	
-	protected class Socks5WriteManager implements Runnable
-	{
-		protected final Socket socket;
-		
-		public Socks5WriteManager(Socket socket)
-		{
-			this.socket = socket;
-		}
-		
-		@SuppressWarnings("deprecation")
-		@Override
-		public void run()
-		{
-			System.out.println("Beginning the file transfer to the target.");
-			
-			try (final OutputStream outStream = socket.getOutputStream(); final InputStream fileInstream = new BufferedInputStream(new FileInputStream(sendFile));)
-			{				
-				// Allocate a 16K buffer
-				byte[] buffer = new byte[16384];
-				long writtenSoFar = 0;
-				int read = fileInstream.read(buffer);
-				writtenSoFar += read;
-				while (read > -1)
-				{
-					outStream.write(buffer, 0, read);
-					
-					for (FileTransferDataListener listener : fileTransferDataListeners )
-					{
-						// don't let an exception in the listener kill the transport
-						try 
-						{
-							if (listener.dataTransfered(writtenSoFar) != 0)
-							{
-								// the transfer was interrupted by the listener
-								
-								System.out.println("File transfer was interrupted by a transfer listener.  Terminating the session");
-								
-								// terminate the session
-								// send the session terminate message
-								final Jingle sessionTerminate = util.createSessionTerminateCancel(recipFullJid, streamId);
-
-								con.sendIqRequestAsync(sessionTerminate);
-								return;
-							}
-						}
-						catch (Throwable t) {/*no-op*/}
-						
-					}
-					
-					read = fileInstream.read(buffer);
-					writtenSoFar += read;
-				}
-				
-				System.out.println("File transfer is successful.  Terminating the session");
-	
-				
-				// send the session terminate message
-				final Jingle sessionTerminate = util.createSessionTerminateSuccess(recipFullJid, streamId);
-
-				con.sendIqRequestAsync(sessionTerminate);
-			}
-			catch (Exception e)
-			{
-				
-			}
-			finally 
-			{
-				jingleManager.unregisterJingleSessionHandler(recipFullJid, streamId, OutgoingFileTransport.this);
-				// close the socket
-				IOUtils.closeQuietly(socket);
-			}
-		}
 	}
 }

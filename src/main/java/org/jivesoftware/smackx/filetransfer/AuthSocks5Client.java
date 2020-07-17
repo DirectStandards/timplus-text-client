@@ -11,7 +11,6 @@ import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.security.SecureRandom;
-import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -30,7 +29,6 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
-import javax.net.ssl.X509TrustManager;
 
 import org.jivesoftware.smack.SmackException;
 import org.jivesoftware.smack.XMPPConnection;
@@ -40,26 +38,28 @@ import org.jivesoftware.smack.SmackException.NotConnectedException;
 import org.jivesoftware.smack.XMPPException.XMPPErrorException;
 import org.jivesoftware.smack.packet.IQ;
 import org.jivesoftware.smack.util.StringUtils;
-import org.jivesoftware.smackx.bytestreams.socks5.Socks5Client;
 import org.jivesoftware.smackx.bytestreams.socks5.Socks5Utils;
 import org.jivesoftware.smackx.bytestreams.socks5.packet.Bytestream;
 import org.jivesoftware.smackx.bytestreams.socks5.packet.Bytestream.StreamHost;
 import org.jxmpp.jid.Jid;
-import org.nhindirect.common.crypto.CryptoExtensions;
 
-public class AuthSocks5Client extends Socks5Client
+public class AuthSocks5Client
 {
     private WeakReference<XMPPConnection> connection;
 	
-    private String sessionID;
+    protected StreamHost streamHost;
 
-    private final Jid target;
+    protected String digest;
+    
+    protected String sessionID;
+
+    protected final Jid target;
 	
 	public AuthSocks5Client(StreamHost streamHost, String digest, XMPPConnection connection,
             String sessionID, Jid target)
-	{
-		super(streamHost, digest);
-		
+	{		
+        this.streamHost = streamHost;
+        this.digest = digest;
         this.connection = new WeakReference<>(connection);
         this.sessionID = sessionID;
         this.target = target;
@@ -88,7 +88,7 @@ public class AuthSocks5Client extends Socks5Client
     				caKeyStore.load(null, null);
     				caKeyStore.setCertificateEntry("CA", caCert);
     				
-    				TrustManagerFactory tmf = TrustManagerFactory
+    				final TrustManagerFactory tmf = TrustManagerFactory
     					    .getInstance(TrustManagerFactory.getDefaultAlgorithm());
     				tmf.init(caKeyStore);
     				
@@ -96,9 +96,9 @@ public class AuthSocks5Client extends Socks5Client
     				final TrustManager[] trustManagers = tmf.getTrustManagers();
     				
 	    			// initialize socket
-	    			SSLContext sslContext = SSLContext.getInstance("TLSv1.2");
+	    			final SSLContext sslContext = SSLContext.getInstance("TLSv1.2");
 	    			sslContext.init(null, trustManagers, new SecureRandom());
-	    			SSLSocketFactory socketFactory = sslContext.getSocketFactory();
+	    			final SSLSocketFactory socketFactory = sslContext.getSocketFactory();
 	    			
 	    			final SNIHostName serverName = new SNIHostName(streamHost.getJID().toString());
 	    			final List<SNIServerName> serverNames = new ArrayList<>(1);
