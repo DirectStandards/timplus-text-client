@@ -9,11 +9,14 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.security.KeyStore;
 import java.security.SecureRandom;
+import java.security.cert.PKIXBuilderParameters;
+import java.security.cert.PKIXParameters;
+import java.security.cert.TrustAnchor;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -21,6 +24,7 @@ import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import javax.net.ssl.CertPathTrustManagerParameters;
 import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SNIServerName;
 import javax.net.ssl.SSLContext;
@@ -84,14 +88,13 @@ public class AuthSocks5Client
     			// initialize connection to SOCKS5 proxy
     			try 
     			{   		
-    				final KeyStore caKeyStore = KeyStore.getInstance("PKCS12");
-    				caKeyStore.load(null, null);
-    				caKeyStore.setCertificateEntry("CA", caCert);
-    				
     				final TrustManagerFactory tmf = TrustManagerFactory
     					    .getInstance(TrustManagerFactory.getDefaultAlgorithm());
-    				tmf.init(caKeyStore);
     				
+    				final PKIXParameters trustParams = new PKIXBuilderParameters(Collections.singleton(new TrustAnchor(caCert, null)), null);
+    				trustParams.setRevocationEnabled(false);
+    				
+    				tmf.init(new CertPathTrustManagerParameters(trustParams));
     				
     				final TrustManager[] trustManagers = tmf.getTrustManagers();
     				
@@ -118,6 +121,7 @@ public class AuthSocks5Client
     			}
     			catch (Exception e) 
     			{
+    				e.printStackTrace();
     				if (!socket.isClosed()) 
     				{
     					try 
