@@ -36,7 +36,7 @@ public class IBBWriteManager implements Runnable
 	{
 		System.out.println("Opening In-Band file transfer");
 		
-		final IBBTransferNegotiator inbandTransferManager = new Negotiator();
+		final IBBTransferNegotiator inbandTransferManager = new JingleIBBTransferNegotiator(ftSession.con);
 		
 		try(OutputStream outStream = inbandTransferManager.createOutgoingStream(ftSession.streamId, ftSession.con.getUser(), ftSession.fileTransferTargetJID);
 				final InputStream fileInstream = new BufferedInputStream(new FileInputStream(ftSession.sendFile)))
@@ -105,13 +105,5 @@ public class IBBWriteManager implements Runnable
 			// assuming the closer of the output stream will send the appropriate byte stream close stanzas
 		}		
 	
-	}
-	
-	public class Negotiator extends IBBTransferNegotiator
-	{
-		public Negotiator()
-		{
-			super(ftSession.con);
-		}
 	}
 }
