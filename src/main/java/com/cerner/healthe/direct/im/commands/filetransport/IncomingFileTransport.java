@@ -17,6 +17,10 @@ import org.jivesoftware.smack.packet.EmptyResultIQ;
 import org.jivesoftware.smack.packet.IQ;
 import org.jivesoftware.smack.packet.IQ.Type;
 import org.jivesoftware.smack.packet.StandardExtensionElement;
+import org.jivesoftware.smackx.bytestreams.BytestreamListener;
+import org.jivesoftware.smackx.bytestreams.BytestreamRequest;
+import org.jivesoftware.smackx.bytestreams.ibb.InBandBytestreamManager;
+import org.jivesoftware.smackx.bytestreams.ibb.InBandBytestreamSession;
 import org.jivesoftware.smackx.bytestreams.socks5.packet.Bytestream.StreamHost;
 import org.jivesoftware.smackx.filetransfer.AuthSocks5Client;
 import org.jivesoftware.smackx.jingle.JingleHandler;
@@ -98,6 +102,7 @@ public class IncomingFileTransport implements JingleHandler
 				public void run()
 				{
 					final FileTransferSession ftSession = new FileTransferSession();
+					ftSession.con = con;
 					TargetSessionManager sessionManager = new TargetSessionManager(ftSession);
 					
 					try
@@ -126,7 +131,7 @@ public class IncomingFileTransport implements JingleHandler
 							ftSession.streamId = jingle.getSid();
 							ftSession.fileTransferTargetJID = jingle.getTo().asEntityFullJidIfPossible();
 							ftSession.initiatorJID = jingle.getFrom().asEntityFullJidIfPossible();
-							ftSession.con = con;
+							
 							
 							final StandardExtensionElement fileTransfer = (StandardExtensionElement)jingle.getContents().get(0).getDescription().getJingleContentDescriptionChildren().get(0);
 							//final JingleFileTransferChild jingleFile = (JingleFileTransferChild)fileTransfer.getJingleContentDescriptionChildren().get(0);
@@ -177,8 +182,10 @@ public class IncomingFileTransport implements JingleHandler
 		
 	}
 
-	protected class TargetSessionManager implements Runnable, JingleSessionHandler
+	protected class TargetSessionManager implements Runnable, JingleSessionHandler, BytestreamListener
 	{
+		protected InBandBytestreamManager ibbManager;
+		
 		protected List<JingleContentTransportCandidate> candidates;
 		
 		protected String dstAddressHashString;
@@ -190,6 +197,8 @@ public class IncomingFileTransport implements JingleHandler
 			this.ftSession = ftSession;
 			
 			ftSession.sessionHandler = this;
+			
+			this.ibbManager = InBandBytestreamManager.getByteStreamManager(ftSession.con);
 		}
 		
 		public void setSocks5Info(List<JingleContentTransportCandidate> candidates, String dstAddressHashString)
@@ -270,6 +279,8 @@ public class IncomingFileTransport implements JingleHandler
 			{
 				System.out.println("The initiator has terminated the session.");
 				
+				
+				ibbManager.addIncomingBytestreamListener(TargetSessionManager.this, ftSession.initiatorJID);
 				jingleManager.unregisterJingleSessionHandler(ftSession.initiatorJID, ftSession.streamId, this);
 				
 				// by spec, we return an empty IQ result
@@ -356,6 +367,33 @@ public class IncomingFileTransport implements JingleHandler
 			}
 		}
 		
+		@Override
+		public void incomingBytestreamRequest(BytestreamRequest request)
+		{
+			try
+			{
+				final InBandBytestreamSession session = (InBandBytestreamSession)request.accept();
+				
+				session.setCloseBothStreamsEnabled(true);
+				
+				ftSession.ibbInputStream = session.getInputStream();
+				
+				transferFileExecutor.execute(new IBBReadManager(ftSession));
+				
+			}
+			catch (Exception e)
+			{
+				System.out.println("Error processing In-band file transfer open request.  Terminating session.");
+				
+				final Jingle sessionTerminate = util.createSessionTerminateFailedTransport(ftSession.initiatorJID, ftSession.streamId);
+
+				con.sendIqRequestAsync(sessionTerminate);
+				
+				jingleManager.unregisterJingleSessionHandler(ftSession.fileTransferTargetJID, ftSession.streamId, TargetSessionManager.this);
+				ibbManager.removeIncomingBytestreamListener(ftSession.initiatorJID);
+			}
+		}
+		
 		protected void executeIBBFallBack()
 		{
 			acceptFileExecutor.execute(new Runnable()
@@ -363,6 +401,8 @@ public class IncomingFileTransport implements JingleHandler
 				@Override
 				public void run()
 				{
+					ibbManager.addIncomingBytestreamListener(TargetSessionManager.this, ftSession.initiatorJID);
+					
 					System.out.println("Accepting the transport change.");
 					
 					final Jingle transportAccept = util.createTransportAccept(ftSession.initiatorJID, ftSession.initiatorJID, ftSession.streamId, JingleContent.Creator.initiator, "file-offer",
@@ -387,6 +427,7 @@ public class IncomingFileTransport implements JingleHandler
 						con.sendIqRequestAsync(sessionTerminate);
 						
 						jingleManager.unregisterJingleSessionHandler(ftSession.fileTransferTargetJID, ftSession.streamId, TargetSessionManager.this);
+						ibbManager.removeIncomingBytestreamListener(ftSession.initiatorJID);
 						
 					}
 				}

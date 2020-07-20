@@ -1,6 +1,7 @@
 package com.cerner.healthe.direct.im.commands.filetransport;
 
 import java.io.File;
+import java.io.InputStream;
 import java.net.Socket;
 
 import org.jivesoftware.smack.AbstractXMPPConnection;
@@ -31,4 +32,6 @@ public class FileTransferSession
 	protected JingleSessionHandler sessionHandler;
 	
 	protected AbstractXMPPConnection con;
+	
+	protected InputStream ibbInputStream;
 }
