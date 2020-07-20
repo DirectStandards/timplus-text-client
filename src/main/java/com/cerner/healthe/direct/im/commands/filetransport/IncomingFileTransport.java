@@ -372,6 +372,8 @@ public class IncomingFileTransport implements JingleHandler
 		{
 			try
 			{
+				System.out.println("Received In-band open command.  Accepting open command and kicking of file transport thread.");
+				
 				final InBandBytestreamSession session = (InBandBytestreamSession)request.accept();
 				
 				session.setCloseBothStreamsEnabled(true);
