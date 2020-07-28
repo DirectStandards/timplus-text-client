@@ -8,12 +8,16 @@ import java.util.stream.Collectors;
 import org.jivesoftware.smack.AbstractXMPPConnection;
 import org.jivesoftware.smack.MessageListener;
 import org.jivesoftware.smack.XMPPConnection;
+import org.jivesoftware.smack.XMPPException;
 import org.jivesoftware.smack.packet.Message;
+import org.jivesoftware.smack.packet.StanzaError;
+import org.jivesoftware.smack.packet.StanzaError.Type;
 import org.jivesoftware.smackx.disco.packet.DiscoverItems;
 import org.jivesoftware.smackx.muc.HostedRoom;
 import org.jivesoftware.smackx.muc.InvitationListener;
 import org.jivesoftware.smackx.muc.MucEnterConfiguration;
 import org.jivesoftware.smackx.muc.MultiUserChat;
+import org.jivesoftware.smackx.muc.MultiUserChat.MucCreateConfigFormHandle;
 import org.jivesoftware.smackx.muc.MultiUserChatManager;
 import org.jivesoftware.smackx.muc.packet.MUCUser.Invite;
 import org.jxmpp.jid.DomainBareJid;
@@ -26,7 +30,7 @@ import org.nhindirect.common.tooling.StringArrayUtil;
 
 import com.cerner.healthe.direct.im.printers.HostedRoomPrinter;
 
-public class RoomChatCommands
+public class RoomChatCommands implements MessageListener
 {
     private static final String LIST_ROOMS = "List multi user chat rooms the are available.";
     
@@ -34,7 +38,7 @@ public class RoomChatCommands
     
     private static final String JOIN_ROOM = "Joins a chat room." +
     		"\r\n  room " +
-            "\r\n\t room: The Jid of the room to join.";
+            "\r\n\t room: The Jid of the room to join.  If a domain is not provided, an attempt will be made to use the connected users default chat room sub domain.";
     
     private static final String LEAVE_ROOM = "Leaves a chat room." +
     		"\r\n  room " +
@@ -45,11 +49,18 @@ public class RoomChatCommands
             "\r\n\t room: The Jid of the room." +
     		"\r\n\t message: The message to send to the room.  This should eclose in a double quote (\" \") if the messge contains spaces.";
     
+    private static final String INVITE_TO_ROOM = "Invites another user into a room that you are a member of" +
+    		"\r\n  room invitee " +
+            "\r\n\t room: The Jid of the room to invite the user to" +
+    		"\r\n\t invitee: The JID of the user to invite into the room.";
+    
     protected MultiUserChatManager manager;
     
 	protected AbstractXMPPConnection con;
 	
     protected HostedRoomPrinter roomPrinter;
+    
+    protected DomainBareJid defaultGroupChatDomain;
     
 	public RoomChatCommands(AbstractXMPPConnection con)
 	{
@@ -57,6 +68,7 @@ public class RoomChatCommands
 		
 		roomPrinter = new HostedRoomPrinter();
 	}
+	
 	
 	public void init(AbstractXMPPConnection con)
 	{
@@ -77,7 +89,7 @@ public class RoomChatCommands
 					System.out.println("Received invitaiton to join room " + room.getRoom().asEntityBareJidString() + "  You are already in this room.");
 					return;
 				}
-				System.out.println("Received invitaiton to join room " + room.getRoom().asEntityBareJidString());
+				System.out.println(inviter.asEntityBareJidString() + " has invited you to join room " + room.getRoom().asEntityBareJidString());
 				try
 				{
 					joinChatRoom(new String[] {room.getRoom().asEntityBareJidString()});
@@ -89,17 +101,30 @@ public class RoomChatCommands
 			}
 			
 		});
+		
+		try
+		{
+			final List<DomainBareJid> chatDomains = manager.getMucServiceDomains();
+			if (!chatDomains.isEmpty())
+			{
+				/*
+				 * TIM+ service providers should define a single group chat subdomain
+				 */
+				defaultGroupChatDomain = chatDomains.get(0);
+			}
+		}
+		catch (Exception e)
+		{
+			
+		}
 	}
 	
 	@Command(name = "ListRooms", usage = LIST_ROOMS)
 	public void listChatRooms(String[] args) throws Exception
 	{
-		final List<HostedRoom> rooms = getHostedRooms();
-		
-		if (rooms.isEmpty())
-			System.out.println("No rooms found");
-		else
-			roomPrinter.printRecords(rooms);
+
+		System.out.println("All rooms are hidden.  You can not list existing rooms; only rooms you have joined.  Try the ListJoinedRooms command");
+
 	
 	}
 	
@@ -134,7 +159,13 @@ public class RoomChatCommands
 	@Command(name = "JoinChatRoom", usage = JOIN_ROOM)
 	public void joinChatRoom(String[] args) throws Exception
 	{
-		final String room = StringArrayUtil.getRequiredValue(args, 0);
+		String room = StringArrayUtil.getRequiredValue(args, 0);
+		
+		if (!room.contains("@") && defaultGroupChatDomain != null)
+		{
+			// default to the domain's group chat domain
+			room += "@" + defaultGroupChatDomain.toString();
+		}
 		
 		final MultiUserChat chat = manager.getMultiUserChat(JidCreate.entityBareFrom(room));
 		final Resourcepart nickname = Resourcepart.from(con.getUser().getLocalpart().toString());
@@ -149,28 +180,31 @@ public class RoomChatCommands
 		
 		try
 		{
-			chat.join(mucConfig);
+			final MucCreateConfigFormHandle createConfig = chat.createOrJoin(mucConfig);
+			
+			if (createConfig == null)
+			{
+				System.out.println("Failed to join room");
+				return;
+			}
+			createConfig.makeInstant();
+				
+		}
+		catch (XMPPException.XMPPErrorException e)
+		{
+			StanzaError error = e.getStanzaError();
+			if (error != null && error.getType() == Type.AUTH)
+				System.out.println("You are not allowed to join this room.  It most likely already exists have not you been invited to this room.");
+			else
+				System.out.println("Failed to join room: " + e.getMessage());
+			return;
 		}
 		catch (Exception e)
 		{
-			
+			System.out.println("Failed to join room: " + e.getMessage());
+			return;
 		}
-		chat.addMessageListener(new MessageListener()
-		{
-
-			@Override
-			public void processMessage(Message message)
-			{
-				
-				if (message.getBody() != null)
-				{
-
-					  System.out.println("New message in group " + message.getFrom().asBareJid() + ": " + message.getBody());
-					  System.out.println(">");
-				}
-			}
-			
-		});
+		chat.addMessageListener(this);
 		
 		
 		System.out.println("Joined room " + room);
@@ -189,6 +223,7 @@ public class RoomChatCommands
 			{
 				final MultiUserChat chat = manager.getMultiUserChat(JidCreate.entityBareFrom(room));
 				chat.leave();
+				chat.removeMessageListener(this);
 				
 				System.out.println("Leaving room " + room);
 				return;
@@ -216,6 +251,34 @@ public class RoomChatCommands
 		chat.sendMessage(message);
 	}
 	
+	@Command(name = "InviteToRoom", usage = INVITE_TO_ROOM)
+	public void inviteToRoom(String[] args) throws Exception
+	{
+		final String room = StringArrayUtil.getRequiredValue(args, 0);
+		final String invitee = StringArrayUtil.getRequiredValue(args, 1);
+		
+		final MultiUserChat chat = manager.getMultiUserChat(JidCreate.entityBareFrom(room));
+		
+		
+		
+		if (!chat.isJoined())
+		{
+			System.out.println("You are not currently in this room");
+			return;
+		}
+		try
+		{
+			chat.invite(JidCreate.entityBareFrom(invitee), "");
+		}
+		catch (Exception e)
+		{
+			System.out.println("Failed to inviate user to room.");
+		}
+		
+		System.out.println("Invitation successfuly sent to " + invitee);
+	}
+	
+	
 	protected List<HostedRoom> getHostedRooms() throws Exception
 	{
 		final List<HostedRoom> rooms = new ArrayList<>();
@@ -229,4 +292,17 @@ public class RoomChatCommands
 		
 		return rooms;
 	}
+	
+	@Override
+	public void processMessage(Message message)
+	{
+		
+		if (message.getBody() != null)
+		{
+
+			  System.out.println("New message in group " + message.getFrom().asBareJid() + ": " + message.getBody());
+			  System.out.print(">");
+		}
+	}
+	
 }
