@@ -197,7 +197,7 @@ public class OutgoingFileTransport implements JingleSessionHandler
 			candidateStreamhosts.put(candidateId, streamhost);
 			
 			final JingleS5BTransportCandidate candidate = new JingleS5BTransportCandidate(candidateId, streamhost.getAddress(), 
-				streamhost.getJID(), 7777, priority, JingleS5BTransportCandidate.Type.proxy);
+				streamhost.getJID(), streamhost.getPort(), priority, JingleS5BTransportCandidate.Type.proxy);
 			builder.addTransportCandidate(candidate).setStreamId(ftSession.streamId).setMode(Bytestream.Mode.tcp).setDestinationAddress(dstAddressHashString).build();
 		}
 		
