@@ -10,7 +10,7 @@
 	</parent>
 	<groupId>org.directtruststandards</groupId>
 	<artifactId>timplus-text-client</artifactId>
-	<version>1.1.0</version>
+	<version>1.2.0-SNAPSHOT</version>
 	<name>TIM+ CLI client application</name>
 	<description>TIM+ client application implemented with a text based command line interface.</description>
 
